@@ -4,6 +4,7 @@ import argparse
 import itertools
 import json
 import re
+import subprocess
 import xml.etree.ElementTree as et
 from functools import partial
 
@@ -332,12 +333,39 @@ def assign_ids(messages, modules, stable_data, reserved_ids):
 
 
 def read_input(filenames: list[str], stable_data, reserved_ids):
+    def demangle_line(line: str) -> str:
+        if "catalog<" in line or "module<" in line:
+            return line
+
+        parts = line.strip().split()
+        if not parts:
+            return line
+
+        symbol = parts[-1]
+        if not symbol.startswith("_Z"):
+            return line
+
+        try:
+            demangled = subprocess.run(
+                ["c++filt", symbol],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            return line
+
+        return demangled if demangled else line
+
     def read_file(filename):
         line_re = re.compile(r"^.*unsigned (?:int|long) (catalog|module)<(.+?)>\(\)$")
         with open(filename, "r") as f:
             matching_lines = filter(
                 lambda p: p[1] is not None,
-                ((num + 1, line_re.match(line.strip())) for num, line in enumerate(f)),
+                (
+                    (num + 1, line_re.match(demangle_line(line).strip()))
+                    for num, line in enumerate(f)
+                ),
             )
             return [extract(*m) for m in matching_lines]
 
