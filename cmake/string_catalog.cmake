@@ -76,10 +76,29 @@ function(gen_str_catalog)
         set(SC_GEN_STR_CATALOG ${GEN_STR_CATALOG})
     endif()
 
+    # The generator demangles symbols with c++filt. Binutils demanglers (e.g. the
+    # one Homebrew's sdcc drops on PATH) cannot handle deeply nested C++20 NTTP
+    # symbols and return them unchanged, silently omitting those messages from
+    # the catalog and failing much later at link time. Pin the demangler at
+    # configure time so PATH order cannot change the build result.
+    if(NOT CXXFILT_EXECUTABLE)
+        find_program(
+            CXXFILT_EXECUTABLE
+            NAMES llvm-cxxfilt c++filt
+            HINTS /usr/bin
+            DOC "Demangler used to resolve catalog<> symbols")
+    endif()
+    if(CXXFILT_EXECUTABLE)
+        set(CXXFILT_ENV "CXXFILT=${CXXFILT_EXECUTABLE}")
+    else()
+        set(CXXFILT_ENV "CXXFILT=c++filt")
+    endif()
+
     add_custom_command(
         OUTPUT ${SC_OUTPUT_CPP} ${SC_OUTPUT_JSON} ${SC_OUTPUT_XML}
         COMMAND
-            ${Python3_EXECUTABLE} ${SC_GEN_STR_CATALOG} --input ${UNDEFS}
+            ${CMAKE_COMMAND} -E env ${CXXFILT_ENV} ${Python3_EXECUTABLE}
+            ${SC_GEN_STR_CATALOG} --input ${UNDEFS}
             --json_input ${INPUT_JSON} --cpp_headers ${INPUT_HEADERS}
             --cpp_output ${SC_OUTPUT_CPP} --json_output ${SC_OUTPUT_JSON}
             --xml_output ${SC_OUTPUT_XML} --stable_json ${STABLE_JSON}

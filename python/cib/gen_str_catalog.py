@@ -3,6 +3,7 @@
 import argparse
 import itertools
 import json
+import os
 import re
 import subprocess
 import xml.etree.ElementTree as et
@@ -339,6 +340,13 @@ def assign_ids(messages, modules, stable_data, reserved_ids):
 
 
 def read_input(filenames: list[str], stable_data, reserved_ids):
+    # Some demanglers cannot handle deeply nested C++20 NTTP symbols and return
+    # the mangled name unchanged. That silently drops the affected messages from
+    # the catalog, which only shows up much later as an undefined reference to
+    # catalog<...> at link time. Track those so we can fail loudly instead.
+    cxxfilt = os.environ.get("CXXFILT", "c++filt")
+    undemangled: list[str] = []
+
     def demangle_line(line: str) -> str:
         if "catalog<" in line or "module<" in line:
             return line
@@ -353,7 +361,7 @@ def read_input(filenames: list[str], stable_data, reserved_ids):
 
         try:
             demangled = subprocess.run(
-                ["c++filt", symbol],
+                [cxxfilt, symbol],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -361,7 +369,13 @@ def read_input(filenames: list[str], stable_data, reserved_ids):
         except (FileNotFoundError, subprocess.CalledProcessError):
             return line
 
-        return demangled if demangled else line
+        if not demangled:
+            return line
+        if demangled == symbol and "catalog" in symbol:
+            undemangled.append(symbol)
+            return line
+
+        return demangled
 
     def read_file(filename):
         line_re = re.compile(r"^.*unsigned (?:int|long) (catalog|module)<(.+?)>\(\)$")
@@ -376,6 +390,15 @@ def read_input(filenames: list[str], stable_data, reserved_ids):
             return [extract(*m) for m in matching_lines]
 
     items = list(itertools.chain.from_iterable(read_file(f) for f in filenames))
+
+    if undemangled:
+        raise SystemExit(
+            f"{cxxfilt} failed to demangle {len(undemangled)} catalog symbol(s); "
+            "they would be silently missing from the catalog and fail at link "
+            "time. Point CXXFILT at a demangler that handles nested C++20 "
+            f"template symbols (LLVM c++filt works). First: {undemangled[0][:120]}"
+        )
+
     messages = filter(lambda x: isinstance(x, Message), items)
     unique_messages = {m.key(): m for m in messages}.values()
     modules = filter(lambda x: isinstance(x, Module), items)
